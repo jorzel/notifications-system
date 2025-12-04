@@ -78,14 +78,17 @@ notifications-system/
 │   │   │   └── validator.go        # NotificationValidator interface
 │   │   │
 │   │   ├── template/               # Template aggregate
-│   │   │   ├── template.go         # Template entity
+│   │   │   ├── template.go         # Template entity with Render() method
 │   │   │   ├── errors.go           # Template-specific errors
 │   │   │   └── repository.go       # TemplateRepository interface
 │   │   │
-│   │   └── provider/               # Provider interfaces
-│   │       ├── email.go            # EmailProvider interface
-│   │       ├── sms.go              # SMSProvider interface
-│   │       └── push.go             # PushProvider interface
+│   │   └── provider/               # Provider value objects and interfaces
+│   │       ├── email.go            # EmailAddress, EmailMessage, EmailSender
+│   │       ├── email_test.go
+│   │       ├── sms.go              # PhoneNumber, SMSMessage, SMSSender
+│   │       ├── sms_test.go
+│   │       ├── push.go             # DeviceToken, PushMessage, PushSender
+│   │       └── push_test.go
 │   │
 │   ├── app/
 │   │   ├── notification/           # Notification use cases
@@ -99,7 +102,7 @@ notifications-system/
 │   │   │   └── push_processor_test.go
 │   │   │
 │   │   └── template/               # Template use cases
-│   │       ├── service.go          # TemplateService (load, render, resolve)
+│   │       ├── service.go          # TemplateService (resolve, list)
 │   │       └── service_test.go
 │   │
 │   ├── infrastructure/
@@ -116,32 +119,25 @@ notifications-system/
 │   │       ├── file_repository.go  # File-based template repository
 │   │       └── file_repository_test.go
 │   │
-│   ├── transport/
-│   │   ├── http/
-│   │   │   ├── handler/
-│   │   │   │   ├── notification.go
-│   │   │   │   ├── notification_test.go
-│   │   │   │   ├── template.go
-│   │   │   │   ├── template_test.go
-│   │   │   │   └── health.go
-│   │   │   ├── middleware/
-│   │   │   │   ├── logging.go
-│   │   │   │   └── recovery.go
-│   │   │   ├── dto/
-│   │   │   │   ├── request.go
-│   │   │   │   └── response.go
-│   │   │   └── server.go
-│   │   │
-│   │   └── worker/
-│   │       ├── consumer.go
-│   │       └── consumer_test.go
-│   │
-│   └── validation/
-│       ├── email.go
-│       ├── email_test.go
-│       ├── phone.go
-│       ├── phone_test.go
-│       └── composite.go
+│   └── transport/
+│       ├── http/
+│       │   ├── handler/
+│       │   │   ├── notification.go
+│       │   │   ├── notification_test.go
+│       │   │   ├── template.go
+│       │   │   ├── template_test.go
+│       │   │   └── health.go
+│       │   ├── middleware/
+│       │   │   ├── logging.go
+│       │   │   └── recovery.go
+│       │   ├── dto/
+│       │   │   ├── request.go
+│       │   │   └── response.go
+│       │   └── server.go
+│       │
+│       └── worker/
+│           ├── consumer.go
+│           └── consumer_test.go
 │
 ├── configs/
 │   ├── config.yaml
@@ -234,11 +230,15 @@ type Message struct {
     RetryCount      int
 }
 
+// RenderedContent holds processed template content.
+// Fields usage by notification type:
+//   - Email: Subject (subject line), Body (HTML content)
+//   - SMS:   Body (text message), Subject and Data ignored
+//   - Push:  Subject (title), Body (body text), Data (extra payload)
 type RenderedContent struct {
-    Subject string            // email only
+    Subject string
     Body    string
-    Title   string            // push only
-    Data    map[string]string // push only
+    Data    map[string]string
 }
 ```
 
@@ -260,37 +260,60 @@ type Validator interface {
 // template.go
 type Template struct {
     ID        string
-    Type      notification.NotificationType
+    Type      notification.Type
     Name      string
-    Subject   string
-    Body      string
+    Subject   string  // Go template for email subject / push title
+    Body      string  // Go template for body (html/template for email, text/template for SMS/push)
     IsDefault bool
 }
+
+// Render processes the template with data and returns rendered content
+func (t *Template) Render(data map[string]any) (*notification.RenderedContent, error)
 
 // repository.go
 type Repository interface {
     GetByID(ctx context.Context, id string) (*Template, error)
-    GetDefault(ctx context.Context, notifType notification.NotificationType) (*Template, error)
+    GetDefault(ctx context.Context, notificationType notification.Type) (*Template, error)
     List(ctx context.Context) ([]*Template, error)
 }
 ```
 
-### Provider Interfaces (`domain/provider/`)
+### Provider Value Objects and Interfaces (`domain/provider/`)
+
+Provider value objects encapsulate validation. You cannot create an invalid message.
 
 ```go
-// email.go
+// email.go - Value objects with self-validation
+type EmailAddress struct { value string }
+func NewEmailAddress(email string) (EmailAddress, error)  // validates RFC 5322
+
+type EmailMessage struct { to EmailAddress; subject, body string }
+func NewEmailMessage(to EmailAddress, subject, body string) (EmailMessage, error)
+
 type EmailSender interface {
-    Send(ctx context.Context, to, subject, body string) error
+    Send(ctx context.Context, message EmailMessage) error
 }
 
-// sms.go
+// sms.go - Phone number normalized to E.164
+type PhoneNumber struct { value string }
+func NewPhoneNumber(number string) (PhoneNumber, error)  // normalizes & validates E.164
+
+type SMSMessage struct { to PhoneNumber; text string }
+func NewSMSMessage(to PhoneNumber, text string) (SMSMessage, error)
+
 type SMSSender interface {
-    Send(ctx context.Context, to, message string) error
+    Send(ctx context.Context, message SMSMessage) error
 }
 
-// push.go
+// push.go - Device token validation
+type DeviceToken struct { value string }
+func NewDeviceToken(token string) (DeviceToken, error)
+
+type PushMessage struct { to DeviceToken; title, body string; data map[string]string }
+func NewPushMessage(to DeviceToken, title, body string, data map[string]string) (PushMessage, error)
+
 type PushSender interface {
-    Send(ctx context.Context, token, title, body string, data map[string]string) error
+    Send(ctx context.Context, message PushMessage) error
 }
 ```
 
@@ -319,6 +342,8 @@ func (s *Service) Send(ctx context.Context, req *SendRequest) (*SendResponse, er
 
 ### Processors (`app/notification/`)
 
+Processors create validated provider messages and delegate to sender interfaces.
+
 ```go
 // email_processor.go
 type EmailProcessor struct {
@@ -327,15 +352,29 @@ type EmailProcessor struct {
 }
 
 func (p *EmailProcessor) Process(ctx context.Context, msg *notification.Message) error {
-    return p.sender.Send(ctx,
-        msg.Recipient.Email,
+    // Create validated EmailAddress (validation happens here)
+    emailAddr, err := provider.NewEmailAddress(msg.Recipient.Email)
+    if err != nil {
+        return err
+    }
+
+    // Create validated EmailMessage
+    emailMsg, err := provider.NewEmailMessage(
+        emailAddr,
         msg.RenderedContent.Subject,
         msg.RenderedContent.Body,
     )
+    if err != nil {
+        return err
+    }
+
+    return p.sender.Send(ctx, emailMsg)
 }
 ```
 
 ### Template Service (`app/template/service.go`)
+
+Template rendering is on the Template entity itself. Service handles resolution and listing.
 
 ```go
 type Service struct {
@@ -343,9 +382,10 @@ type Service struct {
     logger zerolog.Logger
 }
 
-func (s *Service) Resolve(ctx context.Context, templateID string, notifType notification.NotificationType) (*template.Template, error)
-func (s *Service) Render(tmpl *template.Template, data map[string]any) (*RenderedContent, error)
+func (s *Service) Resolve(ctx context.Context, templateID string, notificationType notification.Type) (*template.Template, error)
 func (s *Service) List(ctx context.Context) ([]*template.Template, error)
+
+// Note: Rendering is done via Template.Render(data) method on the entity
 ```
 
 ---
@@ -517,23 +557,23 @@ var (
 Each step follows: **Write Tests → Implement → Refactor**
 
 ### Phase 1: Project Setup
-- [ ] Initialize go.mod, Makefile, Docker files
-- [ ] Set up linting (golangci-lint)
-- [ ] Configure test framework (testify)
+- [x] Initialize go.mod, Makefile, Docker files
+- [x] Set up linting (golangci-lint)
+- [x] Configure test framework (testify)
 
 ### Phase 2: Domain Layer
-- [ ] Define notification entity and value objects
-- [ ] Define template entity
-- [ ] Define provider interfaces
-- [ ] Define domain errors
+- [x] Define notification entity and value objects
+- [x] Define template entity with Render() method
+- [x] Define provider value objects and interfaces
+- [x] Define domain errors
 
-### Phase 3: Validation
-- [ ] Write tests for email validation
-- [ ] Implement email validator
-- [ ] Write tests for phone validation
-- [ ] Implement phone validator
-- [ ] Write tests for composite validator
-- [ ] Implement composite validator
+### Phase 3: Validation (in provider value objects)
+- [x] Write tests for EmailAddress and EmailMessage validation
+- [x] Implement email validation (RFC 5322 with net/mail)
+- [x] Write tests for PhoneNumber and SMSMessage validation
+- [x] Implement phone validation (E.164 with normalization)
+- [x] Write tests for DeviceToken and PushMessage validation
+- [x] Implement device token validation
 
 ### Phase 4: Template System
 - [ ] Write tests for template repository (file-based)
