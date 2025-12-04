@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Welcome to Our Service</title>
+</head>
+<body>
+    <h1>Welcome, {{.name}}!</h1>
+    <p>Thank you for joining our service.</p>
+    {{if .activation_link}}
+    <p>Please click <a href="{{.activation_link}}">here</a> to activate your account.</p>
+    {{end}}
+</body>
+</html>
