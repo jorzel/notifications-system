@@ -179,6 +179,9 @@ func ProcessBatch(ctx context.Context, items []Item) error {
 
 
 ## Go Testing Standards
+- use github.com/stretchr/testify for assertions
+- use https://github.com/uber-go/mock for generating mocks
+- use testcontainers-go for integration tests with real dependencies
 
 ### Test Organization
 ```go
@@ -188,22 +191,15 @@ package service
 import "testing"
 
 // Table-driven tests for multiple scenarios
-func TestUserService_CreateUser(t *testing.T) {
+func TestUserService_CreateUserFailed(t *testing.T) {
     tests := []struct {
         name    string
         email   string
-        wantErr bool
         errType error
     }{
         {
-            name:    "creates user with valid email",
-            email:   "user@example.com",
-            wantErr: false,
-        },
-        {
             name:    "returns error for invalid email",
             email:   "invalid",
-            wantErr: true,
             errType: ErrInvalidEmail,
         },
     }
@@ -213,21 +209,35 @@ func TestUserService_CreateUser(t *testing.T) {
             svc := NewUserService(newMockRepo())
             user, err := svc.CreateUser(context.Background(), tt.email)
 
-            if (err != nil) != tt.wantErr {
-                t.Errorf("CreateUser() error = %v, wantErr %v", err, tt.wantErr)
-                return
-            }
+            require.Equal(t, tt.errType, err)
 
-            if tt.wantErr && !errors.Is(err, tt.errType) {
-                t.Errorf("expected error type %v, got %v", tt.errType, err)
-            }
-
-            if !tt.wantErr && user.Email != tt.email {
-                t.Errorf("expected email %v, got %v", tt.email, user.Email)
-            }
         })
     }
 }
+
+func TestUserService_CreateUserSuccess(t *testing.T) {
+    tests := []struct {
+        name    string
+        email   string
+        errType error
+    }{
+        {
+            name:    "creates user with valid email",
+            email:   "user@example.com",
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            svc := NewUserService(newMockRepo())
+            user, err := svc.CreateUser(context.Background(), tt.email)
+
+            require.NoError(t, err)
+
+        })
+    }
+}
+
 ```
 
 ### Integration Tests
@@ -281,6 +291,7 @@ func TestSomething(t *testing.T) {
 ```
 
 ## Observability Guidelines
+- use zerolog for structured logging
 
 ### Structured Logging
 
@@ -337,6 +348,7 @@ logger.Error("database query failed",
 ---
 
 ### Metrics
+- use Prometheus for metrics collection
 
 ```go
 import "github.com/prometheus/client_golang/prometheus"

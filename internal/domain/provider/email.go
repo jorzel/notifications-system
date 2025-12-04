@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"errors"
+	"net/mail"
+	"strings"
 )
 
 var (
@@ -29,11 +31,48 @@ func (e EmailAddress) String() string {
 }
 
 // validateEmail checks if the email format is valid.
-// TODO: Implement in Phase 3
 func validateEmail(email string) error {
 	if email == "" {
 		return ErrInvalidEmail
 	}
+
+	// Check for spaces
+	if strings.Contains(email, " ") {
+		return ErrInvalidEmail
+	}
+
+	// Parse using net/mail for RFC 5322 compliance
+	addr, err := mail.ParseAddress(email)
+	if err != nil {
+		return ErrInvalidEmail
+	}
+
+	// Extract the actual address (removes any display name)
+	email = addr.Address
+
+	// Split into local and domain parts
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 {
+		return ErrInvalidEmail
+	}
+
+	local, domain := parts[0], parts[1]
+
+	// Validate local part is not empty
+	if local == "" {
+		return ErrInvalidEmail
+	}
+
+	// Validate domain has at least one dot (TLD requirement)
+	if !strings.Contains(domain, ".") {
+		return ErrInvalidEmail
+	}
+
+	// Validate domain is not empty and doesn't end with a dot
+	if domain == "" || strings.HasSuffix(domain, ".") {
+		return ErrInvalidEmail
+	}
+
 	return nil
 }
 

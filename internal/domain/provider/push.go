@@ -3,12 +3,16 @@ package provider
 import (
 	"context"
 	"errors"
+	"strings"
 )
 
 var (
 	ErrInvalidDeviceToken = errors.New("invalid device token")
 	ErrEmptyPushBody      = errors.New("push notification body cannot be empty")
 )
+
+// Minimum length for device tokens (FCM and APNs tokens are typically 100+ chars)
+const minDeviceTokenLength = 10
 
 // DeviceToken represents a validated device token for push notifications.
 type DeviceToken struct {
@@ -29,11 +33,18 @@ func (d DeviceToken) String() string {
 }
 
 // validateDeviceToken checks if the device token is valid.
-// TODO: Implement validation in Phase 3
 func validateDeviceToken(token string) error {
-	if token == "" {
+	// Trim whitespace and check if empty
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
 		return ErrInvalidDeviceToken
 	}
+
+	// Check minimum length
+	if len(trimmed) < minDeviceTokenLength {
+		return ErrInvalidDeviceToken
+	}
+
 	return nil
 }
 
