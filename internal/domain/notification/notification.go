@@ -25,6 +25,26 @@ func (t Type) IsValid() bool {
 	}
 }
 
+// Priority selects the queue lane for a notification. Bulk sends
+// (campaigns) must never delay transactional notifications (OTP,
+// password reset), so each channel has a queue per priority class.
+type Priority string
+
+const (
+	PriorityTransactional Priority = "transactional"
+	PriorityBulk          Priority = "bulk"
+)
+
+// IsValid checks if the priority is valid.
+func (p Priority) IsValid() bool {
+	switch p {
+	case PriorityTransactional, PriorityBulk:
+		return true
+	default:
+		return false
+	}
+}
+
 // Status represents the current state of a notification.
 type Status string
 
@@ -38,6 +58,7 @@ const (
 type Notification struct {
 	ID           string
 	Type         Type
+	Priority     Priority
 	Recipient    Recipient
 	TemplateID   string
 	TemplateData map[string]any
@@ -48,10 +69,11 @@ type Notification struct {
 }
 
 // New creates a new Notification with pending status.
-func New(notifType Type, recipient Recipient, templateID string, templateData map[string]any) *Notification {
+func New(notifType Type, priority Priority, recipient Recipient, templateID string, templateData map[string]any) *Notification {
 	return &Notification{
 		ID:           uuid.New().String(),
 		Type:         notifType,
+		Priority:     priority,
 		Recipient:    recipient,
 		TemplateID:   templateID,
 		TemplateData: templateData,

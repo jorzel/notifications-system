@@ -7,10 +7,12 @@ import (
 )
 
 // Repository defines the interface for template storage operations.
+// Templates are scoped by notification type: the same ID (e.g. "default")
+// may exist independently for each channel.
 type Repository interface {
-	// GetByID retrieves a template by its ID.
+	// Get retrieves a template by notification type and ID.
 	// Returns ErrTemplateNotFound if the template does not exist.
-	GetByID(ctx context.Context, id string) (*Template, error)
+	Get(ctx context.Context, notificationType notification.Type, id string) (*Template, error)
 
 	// GetDefault retrieves the default template for a notification type.
 	// Returns ErrNoDefaultTemplate if no default template exists.

@@ -3,19 +3,24 @@ package notification
 import "time"
 
 // Message represents the notification payload sent through the message queue.
-// It contains the rendered content ready for delivery.
+// It carries the template reference, not rendered content: rendering happens
+// at the worker so messages stay small under burst, the API hot path stays
+// cheap, and template fixes apply to in-flight messages.
 type Message struct {
-	ID              string
-	Type            Type
-	Recipient       Recipient
-	RenderedContent RenderedContent
-	Metadata        map[string]string
-	CreatedAt       time.Time
-	RetryCount      int
+	ID           string
+	Type         Type
+	Priority     Priority
+	Recipient    Recipient
+	TemplateID   string
+	TemplateData map[string]any
+	Metadata     map[string]string
+	CreatedAt    time.Time
+	RetryCount   int
 }
 
 // RenderedContent holds the processed template content ready for delivery.
-// Fields are used differently depending on notification type:
+// It is produced by Template.Render at the worker and never travels over
+// the queue. Fields are used differently depending on notification type:
 //   - Email: Subject (subject line), Body (HTML content)
 //   - SMS: Body (text message), Subject and Data ignored
 //   - Push: Subject (title), Body (body text), Data (extra payload)
@@ -25,16 +30,18 @@ type RenderedContent struct {
 	Data    map[string]string
 }
 
-// NewMessage creates a new Message from a Notification with rendered content.
-func NewMessage(n *Notification, content RenderedContent, metadata map[string]string) *Message {
+// NewMessage creates a new Message from a Notification.
+func NewMessage(n *Notification, metadata map[string]string) *Message {
 	return &Message{
-		ID:              n.ID,
-		Type:            n.Type,
-		Recipient:       n.Recipient,
-		RenderedContent: content,
-		Metadata:        metadata,
-		CreatedAt:       n.CreatedAt,
-		RetryCount:      0,
+		ID:           n.ID,
+		Type:         n.Type,
+		Priority:     n.Priority,
+		Recipient:    n.Recipient,
+		TemplateID:   n.TemplateID,
+		TemplateData: n.TemplateData,
+		Metadata:     metadata,
+		CreatedAt:    n.CreatedAt,
+		RetryCount:   0,
 	}
 }
 
