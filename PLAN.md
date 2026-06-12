@@ -75,7 +75,9 @@ notifications-system/
 │       └── main.go
 ├── internal/
 │   ├── api/
-│   │   └── openapi.yaml
+│   │   ├── openapi.yaml        # OpenAPI 3 spec — source of truth, written first
+│   │   ├── generate.go         # go:generate directive for oapi-codegen
+│   │   └── server.gen.go       # generated: Echo ServerInterface + request/response types
 │   │
 │   ├── domain/
 │   │   ├── notification/           # Notification entity
@@ -139,10 +141,7 @@ notifications-system/
 │       │   ├── middleware/
 │       │   │   ├── logging.go
 │       │   │   └── recovery.go
-│       │   ├── dto/
-│       │   │   ├── request.go
-│       │   │   └── response.go
-│       │   └── server.go
+│       │   └── server.go       # request/response types come generated from the spec
 │       │
 │       └── worker/
 │           ├── consumer.go
@@ -432,6 +431,8 @@ func (s *Service) List(ctx context.Context) ([]*template.Template, error)
 
 ## 5. API Design
 
+**Spec-first.** `internal/api/openapi.yaml` is written before any handler code and is the single source of truth for the HTTP API. From it, [oapi-codegen](https://github.com/oapi-codegen/oapi-codegen) generates the Echo `ServerInterface` and all request/response types (`make generate`); handlers are implemented against the generated interface, and middleware validates incoming requests against the spec. Clients (other microservices) generate their own clients from the same file. The spec, the server, and the docs cannot drift apart.
+
 ### Endpoints
 
 | Method | Endpoint | Description |
@@ -497,15 +498,11 @@ func NewServer(cfg *config.Config, notifSvc *notification.Service, tmplSvc *temp
     e.GET("/health", handler.HealthCheck)
     e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 
-    // API routes
-    api := e.Group("/api/v1")
-    notifHandler := handler.NewNotificationHandler(notifSvc, logger)
-    tmplHandler := handler.NewTemplateHandler(tmplSvc, logger)
-
-    api.POST("/notifications", notifHandler.Send)
-    api.POST("/notifications/batch", notifHandler.SendBatch)
-    api.GET("/templates", tmplHandler.List)
-    api.GET("/templates/:id", tmplHandler.Get)
+    // API routes: handlers implement the generated api.ServerInterface,
+    // routes are registered from the spec, requests validated against it
+    apiGroup := e.Group("/api/v1")
+    apiGroup.Use(oapimiddleware.OapiRequestValidator(spec))
+    api.RegisterHandlersWithBaseURL(e, handler.New(notifSvc, tmplSvc, logger), "/api/v1")
 
     return e
 }
@@ -628,12 +625,14 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [ ] Write tests for notification service (validate, template check, publish — no rendering)
 - [ ] Implement notification service (with mock publisher)
 
-### Phase 6: HTTP Transport
+### Phase 6: HTTP Transport (spec-first)
+- [ ] Write OpenAPI spec (`internal/api/openapi.yaml`): all endpoints, request/response schemas (incl. `priority` enum defaulting to `transactional`), error responses
+- [ ] Add Makefile `generate` target running oapi-codegen on the spec (server interface + types into `internal/api/server.gen.go`, via `go:generate`); commit generated code
 - [ ] Write tests for notification handler
-- [ ] Implement notification handler
+- [ ] Implement notification handler (implements generated `ServerInterface`)
 - [ ] Write tests for template handler
 - [ ] Implement template handler
-- [ ] Set up Echo server with routes and middleware
+- [ ] Set up Echo server: routes registered from generated code, spec validation middleware, logging/recovery middleware
 - [ ] Implement health check endpoint
 
 ### Phase 7: Message Queue
@@ -666,8 +665,7 @@ Each step follows: **Write Tests → Implement → Refactor**
 ### Phase 11: Integration Tests & Documentation
 - [ ] Write API integration tests (testcontainers)
 - [ ] Write worker integration tests (testcontainers)
-- [ ] Finalize OpenAPI specification
-- [ ] Generate API documentation
+- [ ] Serve the OpenAPI spec (Swagger UI or `/openapi.yaml` endpoint) — the spec itself already exists from Phase 6
 
 ---
 
@@ -675,6 +673,9 @@ Each step follows: **Write Tests → Implement → Refactor**
 
 ```go
 github.com/labstack/echo/v4
+github.com/oapi-codegen/oapi-codegen/v2   // codegen tool, invoked via make generate
+github.com/oapi-codegen/runtime           // runtime helpers for generated code
+github.com/oapi-codegen/echo-middleware   // request validation against the spec
 github.com/rabbitmq/amqp091-go
 github.com/go-playground/validator/v10
 github.com/spf13/viper
