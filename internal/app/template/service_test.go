@@ -114,11 +114,23 @@ func TestServiceResolveFailed(t *testing.T) {
 	}
 }
 
-func TestServiceList(t *testing.T) {
+func TestServiceListAll(t *testing.T) {
 	svc := NewService(newFakeRepository())
 
-	templates, err := svc.List(context.Background())
+	templates, err := svc.List(context.Background(), "")
 
 	require.NoError(t, err)
 	require.Len(t, templates, 3)
+}
+
+func TestServiceListFilteredByType(t *testing.T) {
+	svc := NewService(newFakeRepository())
+
+	templates, err := svc.List(context.Background(), notification.TypeEmail)
+
+	require.NoError(t, err)
+	require.Len(t, templates, 2)
+	for _, tmpl := range templates {
+		require.Equal(t, notification.TypeEmail, tmpl.Type)
+	}
 }

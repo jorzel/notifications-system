@@ -377,7 +377,11 @@ func (s *Service) Send(ctx context.Context, req *SendRequest) (*SendResponse, er
 }
 ```
 
-Structured logging is added across services in Phase 10.
+**Logging pattern:** the base zerolog.Logger is injected only at composition
+roots (`main` → `NewServer` / worker consumer). Middleware seeds each request
+context with a request-scoped logger (`logger.WithContext(ctx)`); all other
+code retrieves it with `zerolog.Ctx(ctx)`. Loggers are never stored in struct
+fields. Business-event logging across services is completed in Phase 10.
 
 ```go
 ```
@@ -660,14 +664,14 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [x] Implement notification service (mock publisher generated with uber-go/mock via `make generate`)
 
 ### Phase 6: HTTP Transport (spec-first)
-- [ ] Write OpenAPI spec (`internal/api/openapi.yaml`): all endpoints, request/response schemas (incl. `priority` enum defaulting to `transactional`), error responses; template paths are type-scoped (`/templates/{type}/{id}`, list filterable by `?type=`)
-- [ ] Add Makefile `generate` target running oapi-codegen on the spec (server interface + types into `internal/api/server.gen.go`, via `go:generate`); commit generated code
-- [ ] Write tests for notification handler
-- [ ] Implement notification handler (implements generated `ServerInterface`)
-- [ ] Write tests for template handler
-- [ ] Implement template handler
-- [ ] Set up Echo server: routes registered from generated code, spec validation middleware, logging/recovery middleware
-- [ ] Implement health check endpoint
+- [x] Write OpenAPI spec (`internal/api/openapi.yaml`): all endpoints, request/response schemas (incl. `priority` enum defaulting to `transactional`), error responses; template paths are type-scoped (`/templates/{type}/{id}`, list filterable by `?type=`)
+- [x] Add Makefile `generate` target running oapi-codegen on the spec (strict server + types into `internal/api/server.gen.go`, via `go:generate`); generated code committed
+- [x] Write tests for handlers (httptest through the full server: routing + spec validation + handlers + error mapping)
+- [x] Implement handlers (implement generated `StrictServerInterface`; batch with per-item results)
+- [x] Set up Echo server: routes registered from generated code, spec validation middleware, request-id/recovery middleware, centralized error mapper
+- [x] Request logging: per-request logger seeded into context (`zerolog.Ctx`), one access-log line per request with real status
+- [x] Implement health check endpoint
+- [x] Runnable `cmd/api` (graceful shutdown; stub publisher until Phase 7)
 
 ### Phase 7: Message Queue
 - [ ] Implement RabbitMQ connection

@@ -29,7 +29,22 @@ func (s *Service) Resolve(ctx context.Context, templateID string, notificationTy
 	return s.repo.Get(ctx, notificationType, templateID)
 }
 
-// List returns all available templates.
-func (s *Service) List(ctx context.Context) ([]*domaintemplate.Template, error) {
-	return s.repo.List(ctx)
+// List returns available templates, optionally filtered by notification
+// type. A zero-value typeFilter returns all templates.
+func (s *Service) List(ctx context.Context, typeFilter notification.Type) ([]*domaintemplate.Template, error) {
+	templates, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if typeFilter == "" {
+		return templates, nil
+	}
+
+	filtered := make([]*domaintemplate.Template, 0, len(templates))
+	for _, tmpl := range templates {
+		if tmpl.Type == typeFilter {
+			filtered = append(filtered, tmpl)
+		}
+	}
+	return filtered, nil
 }
