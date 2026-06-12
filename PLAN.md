@@ -157,7 +157,7 @@ notifications-system/
 │       ├── sms/
 │       │   └── default.txt
 │       └── push/
-│           └── default.json
+│           └── default.txt
 │
 ├── integration_tests/
 │   ├── api_test.go
@@ -296,8 +296,10 @@ type Template struct {
 func (t *Template) Render(data map[string]any) (*notification.RenderedContent, error)
 
 // repository.go
+// Templates are scoped by notification type: the same ID (e.g. "default")
+// may exist independently for each channel.
 type Repository interface {
-    GetByID(ctx context.Context, id string) (*Template, error)
+    Get(ctx context.Context, notificationType notification.Type, id string) (*Template, error)
     GetDefault(ctx context.Context, notificationType notification.Type) (*Template, error)
     List(ctx context.Context) ([]*Template, error)
 }
@@ -617,10 +619,10 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [x] Implement device token validation
 
 ### Phase 4: Template System
-- [ ] Write tests for template repository (file-based)
-- [ ] Implement file repository
-- [ ] Write tests for template service (resolve, render)
-- [ ] Implement template service
+- [x] Write tests for template repository (file-based)
+- [x] Implement file repository (directory per type, optional YAML front matter for name/subject)
+- [x] Write tests for template service (resolve with default fallback, list)
+- [x] Implement template service
 
 ### Phase 5: Notification Service
 - [ ] Write tests for notification service (validate, template check, publish — no rendering)

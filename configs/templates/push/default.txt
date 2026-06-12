@@ -1,0 +1,5 @@
+---
+name: Default Push
+subject: "{{.title}}"
+---
+{{.message}}
