@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt clean run-api run-worker docker-build docker-up docker-down tidy
+.PHONY: build test lint fmt clean run-api run-worker docker-build docker-up docker-down tidy generate
 
 # Go parameters
 GOCMD=go
@@ -46,6 +46,10 @@ fmt:
 # Tidy dependencies
 tidy:
 	$(GOMOD) tidy
+
+# Generate code (mocks via uber-go/mock; oapi-codegen server from the OpenAPI spec)
+generate:
+	$(GOCMD) generate ./...
 
 # Clean build artifacts
 clean:

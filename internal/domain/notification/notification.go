@@ -1,9 +1,12 @@
 package notification
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/jorzel/notifications-system/internal/domain/provider"
 )
 
 // Type represents the notification channel.
@@ -69,7 +72,20 @@ type Notification struct {
 }
 
 // New creates a new Notification with pending status.
-func New(notifType Type, priority Priority, recipient Recipient, templateID string, templateData map[string]any) *Notification {
+// It enforces the entity's invariants — a Notification cannot exist with
+// an unknown type or priority, or a recipient that doesn't match its
+// channel (same always-valid principle as the provider value objects).
+func New(notifType Type, priority Priority, recipient Recipient, templateID string, templateData map[string]any) (*Notification, error) {
+	if !notifType.IsValid() {
+		return nil, NewValidationError("type", fmt.Errorf("%w: %q", ErrInvalidType, notifType))
+	}
+	if !priority.IsValid() {
+		return nil, NewValidationError("priority", fmt.Errorf("%w: %q", ErrInvalidPriority, priority))
+	}
+	if err := validateRecipient(notifType, recipient); err != nil {
+		return nil, err
+	}
+
 	return &Notification{
 		ID:           uuid.New().String(),
 		Type:         notifType,
@@ -79,7 +95,39 @@ func New(notifType Type, priority Priority, recipient Recipient, templateID stri
 		TemplateData: templateData,
 		Status:       StatusPending,
 		CreatedAt:    time.Now().UTC(),
+	}, nil
+}
+
+// validateRecipient checks that the recipient carries a well-formed
+// address for the notification's channel, reusing the provider value
+// objects so format rules live in one place.
+func validateRecipient(notifType Type, recipient Recipient) error {
+	switch notifType {
+	case TypeEmail:
+		if recipient.Email == "" {
+			return NewValidationError("recipient.email", ErrEmptyRecipient)
+		}
+		if _, err := provider.NewEmailAddress(recipient.Email); err != nil {
+			return NewValidationError("recipient.email", err)
+		}
+	case TypeSMS:
+		if recipient.PhoneNumber == "" {
+			return NewValidationError("recipient.phone_number", ErrEmptyRecipient)
+		}
+		if _, err := provider.NewPhoneNumber(recipient.PhoneNumber); err != nil {
+			return NewValidationError("recipient.phone_number", err)
+		}
+	case TypePush:
+		if recipient.DeviceToken == "" {
+			return NewValidationError("recipient.device_token", ErrEmptyRecipient)
+		}
+		if _, err := provider.NewDeviceToken(recipient.DeviceToken); err != nil {
+			return NewValidationError("recipient.device_token", err)
+		}
+	default:
+		return NewValidationError("type", fmt.Errorf("%w: %q", ErrInvalidType, notifType))
 	}
+	return nil
 }
 
 // MarkSent updates the notification status to sent.

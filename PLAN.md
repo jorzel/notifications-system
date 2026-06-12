@@ -84,9 +84,9 @@ notifications-system/
 │   │   │   ├── notification.go     # Notification entity
 │   │   │   ├── recipient.go        # Recipient value object
 │   │   │   ├── message.go          # NotificationMessage (queue payload)
-│   │   │   ├── errors.go           # Notification-specific errors
-│   │   │   ├── publisher.go        # NotificationPublisher interface
-│   │   │   └── validator.go        # NotificationValidator interface
+│   │   │   ├── errors.go           # Notification-specific errors, ValidationError
+│   │   │   ├── publisher.go        # Publisher interface
+│   │   │   └── mocks/              # generated mocks (uber-go/mock, via make generate)
 │   │   │
 │   │   ├── template/               # Template entity
 │   │   │   ├── template.go         # Template entity with Render() method
@@ -271,10 +271,24 @@ type RenderedContent struct {
 type Publisher interface {
     Publish(ctx context.Context, msg *Message) error
 }
+```
 
-// validator.go
-type Validator interface {
-    Validate(n *Notification) error
+Validation happens in the constructor — there is no separate Validator. `New`
+returns an error for an unknown type or priority, or a recipient that doesn't
+match the channel (format checked via the provider value objects). This keeps
+the entity always-valid, the same principle as the provider value objects.
+Every violation is wrapped in `*ValidationError` (with the offending field),
+which the transport layer maps to HTTP 400 via `errors.As`:
+
+```go
+// notification.go
+func New(notifType Type, priority Priority, recipient Recipient,
+    templateID string, templateData map[string]any) (*Notification, error)
+
+// errors.go
+type ValidationError struct {
+    Field string // e.g. "type", "recipient.email"
+    Err   error
 }
 ```
 
@@ -353,16 +367,19 @@ type PushSender interface {
 type Service struct {
     publisher   notification.Publisher
     templateSvc *template.Service
-    validator   notification.Validator
-    logger      zerolog.Logger
 }
 
 func (s *Service) Send(ctx context.Context, req *SendRequest) (*SendResponse, error) {
-    // 1. Create notification
-    // 2. Validate
-    // 3. Check template exists (no rendering — that happens at the worker)
+    // 1. Default priority to transactional if unset
+    // 2. Create notification (constructor validates type, priority, recipient)
+    // 3. Resolve template and stamp its ID (no rendering — that happens at the worker)
     // 4. Publish to queue (routing key: <type>.<priority>)
 }
+```
+
+Structured logging is added across services in Phase 10.
+
+```go
 ```
 
 ### Processors (`app/notification/`)
@@ -417,8 +434,7 @@ Template rendering is on the Template entity itself. Service handles resolution 
 
 ```go
 type Service struct {
-    repo   template.Repository
-    logger zerolog.Logger
+    repo template.Repository
 }
 
 func (s *Service) Resolve(ctx context.Context, templateID string, notificationType notification.Type) (*template.Template, error)
@@ -439,8 +455,8 @@ func (s *Service) List(ctx context.Context) ([]*template.Template, error)
 |--------|----------|-------------|
 | POST | `/api/v1/notifications` | Send a notification |
 | POST | `/api/v1/notifications/batch` | Send multiple notifications |
-| GET | `/api/v1/templates` | List available templates |
-| GET | `/api/v1/templates/{id}` | Get template details |
+| GET | `/api/v1/templates` | List available templates (optional `?type=` filter) |
+| GET | `/api/v1/templates/{type}/{id}` | Get template details (IDs are type-scoped: `default` exists per channel) |
 | GET | `/health` | Health check |
 | GET | `/metrics` | Prometheus metrics |
 
@@ -507,6 +523,23 @@ func NewServer(cfg *config.Config, notifSvc *notification.Service, tmplSvc *temp
     return e
 }
 ```
+
+### Error Mapping (domain → HTTP)
+
+Handlers return domain errors as-is; a single error mapper in `transport/http`
+(Echo `HTTPErrorHandler`) translates them. The response body shape is the
+`ErrorResponse` schema in the OpenAPI spec (`code`, `message`, `field`).
+
+| Domain error | Detected via | HTTP |
+|---|---|---|
+| `*notification.ValidationError` | `errors.As` | 400 (body includes `field`) |
+| `template.ErrTemplateNotFound`, `ErrNoDefaultTemplate` | `errors.Is` | 400 on `POST /notifications` (bad reference in body), 404 on `GET /templates/{type}/{id}` |
+| anything else | fallback | 500, generic message — details only in logs |
+
+Malformed JSON, missing required fields, and enum violations never reach the
+domain: the oapi-codegen validation middleware rejects them with 400 based on
+the spec. Domain validation covers what the schema can't express (RFC 5322,
+E.164, recipient-matches-channel).
 
 ### Worker Consumer (`transport/worker/consumer.go`)
 
@@ -622,11 +655,12 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [x] Implement template service
 
 ### Phase 5: Notification Service
-- [ ] Write tests for notification service (validate, template check, publish — no rendering)
-- [ ] Implement notification service (with mock publisher)
+- [x] Move validation into the Notification constructor (always-valid entity, `ValidationError` for HTTP 400 mapping); drop the Validator interface
+- [x] Write tests for notification service (validate, template check, publish — no rendering)
+- [x] Implement notification service (mock publisher generated with uber-go/mock via `make generate`)
 
 ### Phase 6: HTTP Transport (spec-first)
-- [ ] Write OpenAPI spec (`internal/api/openapi.yaml`): all endpoints, request/response schemas (incl. `priority` enum defaulting to `transactional`), error responses
+- [ ] Write OpenAPI spec (`internal/api/openapi.yaml`): all endpoints, request/response schemas (incl. `priority` enum defaulting to `transactional`), error responses; template paths are type-scoped (`/templates/{type}/{id}`, list filterable by `?type=`)
 - [ ] Add Makefile `generate` target running oapi-codegen on the spec (server interface + types into `internal/api/server.gen.go`, via `go:generate`); commit generated code
 - [ ] Write tests for notification handler
 - [ ] Implement notification handler (implements generated `ServerInterface`)

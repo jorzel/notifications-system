@@ -9,7 +9,8 @@ import (
 func TestNewMessage(t *testing.T) {
 	recipient := NewSMSRecipient("+48601234567", "user_789")
 	templateData := map[string]any{"code": "839201"}
-	n := New(TypeSMS, PriorityTransactional, recipient, "otp", templateData)
+	n, err := New(TypeSMS, PriorityTransactional, recipient, "otp", templateData)
+	require.NoError(t, err)
 	metadata := map[string]string{"correlation_id": "login_456"}
 
 	msg := NewMessage(n, metadata)
@@ -26,7 +27,8 @@ func TestNewMessage(t *testing.T) {
 }
 
 func TestMessageCanRetry(t *testing.T) {
-	n := New(TypeEmail, PriorityBulk, NewEmailRecipient("anna.kowalska@example.com", "user_789"), "campaign_spring", nil)
+	n, err := New(TypeEmail, PriorityBulk, NewEmailRecipient("anna.kowalska@example.com", "user_789"), "campaign_spring", nil)
+	require.NoError(t, err)
 	msg := NewMessage(n, nil)
 	maxRetries := 2
 
