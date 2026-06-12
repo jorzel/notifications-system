@@ -4,6 +4,12 @@
 
 A scalable, microservice-ready notification system built in Go that supports multiple notification channels (email, SMS, push) with template-based messaging, asynchronous processing via message queues, and clean architecture principles.
 
+**Design target: spiky load.** The system is sized for bursty traffic — e.g. bulk campaigns causing 10–100x spikes over baseline. Three consequences shape the design:
+
+1. **The queue is the shock absorber.** The API does minimal work (validate + publish) so it can accept bursts quickly; delivery drains at whatever rate providers allow.
+2. **Priority lanes.** Queues are split by channel × priority class (`transactional` vs `bulk`) so a marketing blast never delays an OTP or password reset. Transactional queues have dedicated workers and a tight latency SLO.
+3. **Workers render and rate-limit.** Queue messages carry `template_id + data`, not rendered content — messages stay small under burst, the API hot path stays cheap (<200ms), and template fixes apply to in-flight messages. Workers rate-limit calls to providers so spikes are smoothed before hitting SendGrid/Twilio/FCM, and autoscale on queue depth (e.g. KEDA).
+
 ---
 
 ## 1. System Architecture
@@ -22,23 +28,26 @@ A scalable, microservice-ready notification system built in Go that supports mul
 │  └─────────────────┘  └─────────────────┘  └─────────────────┘              │
 │                                                                              │
 │  • Request validation (email format, phone format, etc.)                     │
-│  • Template resolution                                                       │
-│  • Notification event publishing                                             │
+│  • Template existence check                                                   │
+│  • Notification event publishing (template_id + data, no rendering)          │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           Message Queue (RabbitMQ)                           │
-│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐                    │
-│  │  email_queue  │  │   sms_queue   │  │  push_queue   │                    │
-│  └───────────────┘  └───────────────┘  └───────────────┘                    │
+│                  Message Queue (RabbitMQ, channel × priority)                │
+│  ┌─────────────────────┐ ┌─────────────────────┐ ┌─────────────────────┐    │
+│  │ email.transactional │ │  sms.transactional  │ │ push.transactional  │    │
+│  │ email.bulk          │ │  sms.bulk           │ │ push.bulk           │    │
+│  └─────────────────────┘ └─────────────────────┘ └─────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────┘
                     │                 │                 │
                     ▼                 ▼                 ▼
          ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
          │Email Workers │  │ SMS Workers  │  │ Push Workers │
-         │  (N pods)    │  │  (N pods)    │  │  (N pods)    │
+         │ (autoscaled  │  │ (autoscaled  │  │ (autoscaled  │
+         │ on q. depth) │  │ on q. depth) │  │ on q. depth) │
          └──────────────┘  └──────────────┘  └──────────────┘
+           render template, rate-limit provider calls
                     │                 │                 │
                     ▼                 ▼                 ▼
          ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
@@ -49,9 +58,9 @@ A scalable, microservice-ready notification system built in Go that supports mul
 
 ### Key Components
 
-1. **API Server**: Stateless REST API that validates requests, resolves templates, and publishes notification events to message queues
-2. **Message Queue**: RabbitMQ for reliable, asynchronous message delivery with separate queues per notification type
-3. **Workers**: Independent processor services that consume from queues and deliver notifications via third-party providers
+1. **API Server**: Stateless REST API that validates requests, checks template existence, and publishes notification events to message queues. Does no rendering — the hot path stays cheap so bursts are accepted quickly.
+2. **Message Queue**: RabbitMQ for reliable, asynchronous delivery. One queue per channel × priority class (`transactional` / `bulk`) so high-volume bulk sends never delay latency-sensitive transactional notifications.
+3. **Workers**: Independent processor services that consume from queues, resolve and render templates, rate-limit provider calls, and deliver notifications via third-party providers. Scaled on queue depth (e.g. KEDA); transactional queues get dedicated workers.
 
 ---
 
@@ -69,7 +78,7 @@ notifications-system/
 │   │   └── openapi.yaml
 │   │
 │   ├── domain/
-│   │   ├── notification/           # Notification aggregate
+│   │   ├── notification/           # Notification entity
 │   │   │   ├── notification.go     # Notification entity
 │   │   │   ├── recipient.go        # Recipient value object
 │   │   │   ├── message.go          # NotificationMessage (queue payload)
@@ -77,7 +86,7 @@ notifications-system/
 │   │   │   ├── publisher.go        # NotificationPublisher interface
 │   │   │   └── validator.go        # NotificationValidator interface
 │   │   │
-│   │   ├── template/               # Template aggregate
+│   │   ├── template/               # Template entity
 │   │   │   ├── template.go         # Template entity with Render() method
 │   │   │   ├── errors.go           # Template-specific errors
 │   │   │   └── repository.go       # TemplateRepository interface
@@ -175,7 +184,7 @@ notifications-system/
 
 ## 3. Domain Models
 
-### Notification Aggregate (`domain/notification/`)
+### Notification Entity (`domain/notification/`)
 
 ```go
 // notification.go
@@ -195,9 +204,19 @@ const (
     StatusFailed  Status = "failed"
 )
 
+// Priority selects the queue lane. Bulk sends (campaigns) must never
+// delay transactional notifications (OTP, password reset).
+type Priority string
+
+const (
+    PriorityTransactional Priority = "transactional"
+    PriorityBulk          Priority = "bulk"
+)
+
 type Notification struct {
     ID           string
     Type         NotificationType
+    Priority     Priority
     Recipient    Recipient
     TemplateID   string
     TemplateData map[string]any
@@ -220,17 +239,23 @@ type Recipient struct {
 
 ```go
 // message.go - queue payload
+// Carries the template reference, NOT rendered content. Rendering happens
+// at the worker: messages stay small under burst, the API hot path stays
+// cheap, and template fixes apply to in-flight messages.
 type Message struct {
-    ID              string
-    Type            NotificationType
-    Recipient       Recipient
-    RenderedContent RenderedContent
-    Metadata        map[string]string
-    CreatedAt       time.Time
-    RetryCount      int
+    ID           string
+    Type         NotificationType
+    Priority     Priority
+    Recipient    Recipient
+    TemplateID   string
+    TemplateData map[string]any
+    Metadata     map[string]string
+    CreatedAt    time.Time
+    RetryCount   int
 }
 
-// RenderedContent holds processed template content.
+// RenderedContent is produced by Template.Render at the worker and
+// consumed by processors. It never travels over the queue.
 // Fields usage by notification type:
 //   - Email: Subject (subject line), Body (HTML content)
 //   - SMS:   Body (text message), Subject and Data ignored
@@ -254,7 +279,7 @@ type Validator interface {
 }
 ```
 
-### Template Aggregate (`domain/template/`)
+### Template Entity (`domain/template/`)
 
 ```go
 // template.go
@@ -334,24 +359,36 @@ type Service struct {
 func (s *Service) Send(ctx context.Context, req *SendRequest) (*SendResponse, error) {
     // 1. Create notification
     // 2. Validate
-    // 3. Resolve template
-    // 4. Render content
-    // 5. Publish to queue
+    // 3. Check template exists (no rendering — that happens at the worker)
+    // 4. Publish to queue (routing key: <type>.<priority>)
 }
 ```
 
 ### Processors (`app/notification/`)
 
-Processors create validated provider messages and delegate to sender interfaces.
+Processors resolve and render the template, create validated provider messages, and delegate to sender interfaces. Provider calls go through a rate limiter so traffic spikes are smoothed before hitting external APIs.
 
 ```go
 // email_processor.go
 type EmailProcessor struct {
-    sender provider.EmailSender
-    logger zerolog.Logger
+    templateSvc *template.Service
+    sender      provider.EmailSender
+    limiter     *rate.Limiter // golang.org/x/time/rate, per-provider limit
+    logger      zerolog.Logger
 }
 
 func (p *EmailProcessor) Process(ctx context.Context, msg *notification.Message) error {
+    // Resolve and render template (rendering happens at the worker)
+    tmpl, err := p.templateSvc.Resolve(ctx, msg.TemplateID, msg.Type)
+    if err != nil {
+        return err
+    }
+
+    content, err := tmpl.Render(msg.TemplateData)
+    if err != nil {
+        return err
+    }
+
     // Create validated EmailAddress (validation happens here)
     emailAddr, err := provider.NewEmailAddress(msg.Recipient.Email)
     if err != nil {
@@ -359,12 +396,13 @@ func (p *EmailProcessor) Process(ctx context.Context, msg *notification.Message)
     }
 
     // Create validated EmailMessage
-    emailMsg, err := provider.NewEmailMessage(
-        emailAddr,
-        msg.RenderedContent.Subject,
-        msg.RenderedContent.Body,
-    )
+    emailMsg, err := provider.NewEmailMessage(emailAddr, content.Subject, content.Body)
     if err != nil {
+        return err
+    }
+
+    // Smooth bursts before they hit the provider's rate limits
+    if err := p.limiter.Wait(ctx); err != nil {
         return err
     }
 
@@ -409,6 +447,7 @@ func (s *Service) List(ctx context.Context) ([]*template.Template, error)
 POST /api/v1/notifications
 {
     "type": "email",
+    "priority": "transactional",
     "recipient": {
         "email": "user@example.com",
         "user_id": "user_123"
@@ -423,6 +462,8 @@ POST /api/v1/notifications
     }
 }
 ```
+
+`priority` is optional and defaults to `transactional`. Bulk senders (campaigns) must set `"priority": "bulk"` so they are routed to the bulk lane and cannot delay transactional traffic.
 
 ### Response
 
@@ -582,7 +623,7 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [ ] Implement template service
 
 ### Phase 5: Notification Service
-- [ ] Write tests for notification service
+- [ ] Write tests for notification service (validate, template check, publish — no rendering)
 - [ ] Implement notification service (with mock publisher)
 
 ### Phase 6: HTTP Transport
@@ -595,11 +636,12 @@ Each step follows: **Write Tests → Implement → Refactor**
 
 ### Phase 7: Message Queue
 - [ ] Implement RabbitMQ connection
-- [ ] Implement publisher
+- [ ] Declare channel × priority topology (`<type>.<transactional|bulk>` queues)
+- [ ] Implement publisher (routing key from notification type + priority)
 - [ ] Wire publisher to notification service
 
 ### Phase 8: Workers
-- [ ] Write tests for email processor
+- [ ] Write tests for email processor (resolve, render, validate, rate-limit, send)
 - [ ] Implement email processor
 - [ ] Write tests for SMS processor
 - [ ] Implement SMS processor
@@ -607,6 +649,7 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [ ] Implement push processor
 - [ ] Write tests for consumer loop
 - [ ] Implement consumer loop
+- [ ] Per-provider rate limiting (golang.org/x/time/rate), limits from config
 
 ### Phase 9: Provider Integrations
 - [ ] Implement SendGrid email provider
@@ -640,6 +683,7 @@ github.com/testcontainers/testcontainers-go
 github.com/sendgrid/sendgrid-go
 github.com/twilio/twilio-go
 firebase.google.com/go/v4
+golang.org/x/time
 ```
 
 ---
@@ -647,7 +691,7 @@ firebase.google.com/go/v4
 ## 10. Open Questions
 
 1. **Database**: Should we persist notification history? (PostgreSQL for audit trail)
-2. **Rate Limiting**: Should API have rate limiting per client?
+2. **API Rate Limiting**: Should the API have rate limiting per client? (Provider-side rate limiting in workers is already part of the design.)
 3. **Authentication**: API key based? JWT? OAuth2?
 4. **Delivery Status Callbacks**: Webhook support for delivery status updates?
 
