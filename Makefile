@@ -1,4 +1,4 @@
-.PHONY: build test test-integration lint fmt clean run-api run-worker docker-build docker-up docker-down tidy generate
+.PHONY: build test test-integration lint fmt clean run-api run-worker infra infra-down smoke docker-build docker-up docker-down tidy generate
 
 # Go parameters
 GOCMD=go
@@ -11,6 +11,10 @@ GOLINT=golangci-lint
 # Binary names
 API_BINARY=api
 WORKER_BINARY=worker
+
+# Local dev: broker URL for host-run processes. 127.0.0.1 (not localhost)
+# avoids resolving to IPv6 ::1, which Docker's published port doesn't bind.
+RABBITMQ_URL ?= amqp://guest:guest@127.0.0.1:5672/
 
 # Build directories
 BUILD_DIR=bin
@@ -60,23 +64,38 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -f coverage.out coverage.html
 
-# Run API server locally
+# Start only RabbitMQ (the common loop: broker in Docker, app on host)
+infra:
+	docker compose up -d rabbitmq
+
+# Stop the local stack
+infra-down:
+	docker compose down
+
+# Run API server locally (needs `make infra` first)
 run-api:
-	$(GOCMD) run ./cmd/api
+	RABBITMQ_URL=$(RABBITMQ_URL) $(GOCMD) run ./cmd/api
 
-# Run worker locally
+# Run worker locally (needs `make infra` first)
 run-worker:
-	$(GOCMD) run ./cmd/worker
+	RABBITMQ_URL=$(RABBITMQ_URL) $(GOCMD) run ./cmd/worker
 
-# Docker commands
+# Post a sample notification to a locally running API
+smoke:
+	@curl -s -X POST localhost:8080/api/v1/notifications \
+		-H 'Content-Type: application/json' \
+		-d '{"type":"email","priority":"transactional","recipient":{"email":"anna.kowalska@example.com"},"template_id":"welcome","template_data":{"name":"Anna"}}'
+	@echo
+
+# Docker commands (full stack)
 docker-build:
-	docker-compose build
+	docker compose build
 
 docker-up:
-	docker-compose up -d
+	docker compose up -d
 
 docker-down:
-	docker-compose down
+	docker compose down
 
 # Development helpers
 dev-deps:

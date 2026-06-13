@@ -99,6 +99,21 @@ The opposite direction: the bottlenecks move and some choices stop scaling.
 
 Two decisions survive all three profiles unchanged: rendering in the workers (better or neutral everywhere), and infrastructure behind domain interfaces (which is what keeps the profile choice revisable).
 
+## Running locally
+
+The common dev loop runs the broker in Docker and the app on the host:
+
+```bash
+make infra        # start RabbitMQ (Docker); management UI at http://localhost:15672 (guest/guest)
+make run-api      # start the API on :8080 (publishes to the broker)
+make smoke        # POST a sample notification → 202
+make infra-down   # stop the stack
+```
+
+A posted notification is accepted (202) and routed to its `<type>.<priority>` queue; you can watch the lanes fill in the RabbitMQ management UI. The full stack can also run entirely in Docker with `make docker-up`.
+
+> **End-to-end delivery is not wired yet.** `cmd/worker` is still a stub (Phase 8), so messages queue but nothing consumes them — `make run-worker` is a placeholder until the consumer loop lands. Until then "running locally" means API + broker; delivery is exercised by the integration tests.
+
 ## Testing
 
 Tests are split into two tiers so the everyday loop stays fast and Docker-free, while real-infrastructure tests run on demand.
