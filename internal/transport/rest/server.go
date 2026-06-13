@@ -1,7 +1,7 @@
 // Package httpserver assembles the Echo server: routes registered from
 // the generated OpenAPI code, request validation against the spec, and
 // centralized domain-error-to-HTTP mapping.
-package httpserver
+package rest
 
 import (
 	"fmt"
@@ -14,11 +14,11 @@ import (
 	oapimiddleware "github.com/oapi-codegen/echo-middleware"
 	"github.com/rs/zerolog"
 
-	"github.com/jorzel/notifications-system/internal/api"
 	appnotification "github.com/jorzel/notifications-system/internal/app/notification"
 	apptemplate "github.com/jorzel/notifications-system/internal/app/template"
-	"github.com/jorzel/notifications-system/internal/transport/http/handler"
-	"github.com/jorzel/notifications-system/internal/transport/http/middleware"
+	"github.com/jorzel/notifications-system/internal/transport/rest/api"
+	"github.com/jorzel/notifications-system/internal/transport/rest/handler"
+	"github.com/jorzel/notifications-system/internal/transport/rest/middleware"
 )
 
 // HTTP server timeouts harden against slow clients and hung connections.

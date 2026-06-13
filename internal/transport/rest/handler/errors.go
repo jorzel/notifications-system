@@ -8,9 +8,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/jorzel/notifications-system/internal/api"
 	domainnotification "github.com/jorzel/notifications-system/internal/domain/notification"
 	domaintemplate "github.com/jorzel/notifications-system/internal/domain/template"
+	"github.com/jorzel/notifications-system/internal/transport/rest/api"
 )
 
 // Error codes exposed in ErrorResponse.code.

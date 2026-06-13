@@ -1,4 +1,4 @@
-package httpserver
+package rest
 
 import (
 	"context"
@@ -16,12 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/jorzel/notifications-system/internal/api"
 	appnotification "github.com/jorzel/notifications-system/internal/app/notification"
 	apptemplate "github.com/jorzel/notifications-system/internal/app/template"
 	domainnotification "github.com/jorzel/notifications-system/internal/domain/notification"
 	"github.com/jorzel/notifications-system/internal/domain/notification/mocks"
 	infratemplate "github.com/jorzel/notifications-system/internal/infrastructure/template"
+	"github.com/jorzel/notifications-system/internal/transport/rest/api"
 )
 
 const welcomeEmailTemplate = `---

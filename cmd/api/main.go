@@ -13,9 +13,10 @@ import (
 
 	appnotification "github.com/jorzel/notifications-system/internal/app/notification"
 	apptemplate "github.com/jorzel/notifications-system/internal/app/template"
+	"github.com/jorzel/notifications-system/internal/config"
 	"github.com/jorzel/notifications-system/internal/infrastructure/rabbitmq"
 	infratemplate "github.com/jorzel/notifications-system/internal/infrastructure/template"
-	httpserver "github.com/jorzel/notifications-system/internal/transport/http"
+	"github.com/jorzel/notifications-system/internal/transport/rest"
 )
 
 const shutdownTimeout = 10 * time.Second
@@ -26,16 +27,17 @@ func main() {
 		Str("service", "notifications-api").
 		Logger()
 
-	templatesDir := envOr("TEMPLATES_DIR", "configs/templates")
-	addr := envOr("HTTP_ADDR", ":8080")
-	rabbitURL := envOr("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
-
-	templateRepo, err := infratemplate.NewFileRepository(templatesDir)
+	cfg, err := config.LoadAPI()
 	if err != nil {
-		logger.Fatal().Err(err).Str("templates_dir", templatesDir).Msg("failed to load templates")
+		logger.Fatal().Err(err).Msg("invalid api configuration")
 	}
 
-	conn, err := rabbitmq.Dial(rabbitURL)
+	templateRepo, err := infratemplate.NewFileRepository(cfg.TemplatesDir)
+	if err != nil {
+		logger.Fatal().Err(err).Str("templates_dir", cfg.TemplatesDir).Msg("failed to load templates")
+	}
+
+	conn, err := rabbitmq.Dial(cfg.RabbitURL)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to connect to rabbitmq")
 	}
@@ -49,14 +51,14 @@ func main() {
 	tmplSvc := apptemplate.NewService(templateRepo)
 	notifSvc := appnotification.NewService(publisher, tmplSvc)
 
-	server, err := httpserver.NewServer(notifSvc, tmplSvc, logger)
+	server, err := rest.NewServer(notifSvc, tmplSvc, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to build server")
 	}
 
 	go func() {
-		logger.Info().Str("addr", addr).Msg("api server listening")
-		if err := server.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Info().Str("addr", cfg.Addr).Msg("api server listening")
+		if err := server.Start(cfg.Addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatal().Err(err).Msg("server failed")
 		}
 	}()
@@ -71,11 +73,4 @@ func main() {
 		logger.Fatal().Err(err).Msg("shutdown failed")
 	}
 	logger.Info().Msg("api server stopped")
-}
-
-func envOr(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }

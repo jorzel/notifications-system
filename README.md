@@ -42,6 +42,21 @@ notification ─▶ RoutingKey("email","bulk") = "email.bulk"
 
 **Reliability — publisher confirms.** `Publish` returns success only after the broker acknowledges the message, so a notification is never silently lost between API and broker. A nack, or no confirm within a bounded **publish timeout**, becomes an error → the API responds 500 and the client can retry. The timeout covers the whole operation *including the channel-lock wait*, so a hung broker can't stall the API publish path — queued publishes fail fast instead of piling up.
 
+## How delivery works (workers)
+
+A worker consumes one lane, renders the template, builds a validated provider message, rate-limits the call, and sends. Two design decisions shape it:
+
+**One lane per worker process.** A worker serves exactly one `<type>.<priority>` lane, selected by config (`WORKER_TYPE` × `WORKER_PRIORITY`). Deploy one process per lane (up to six). This is what makes the priority split real at runtime: transactional lanes get dedicated capacity and each lane scales independently on its own queue depth (more replicas = more throughput), so a bulk campaign can't starve OTP delivery even under load. The alternative — one process draining both priorities of a channel — would let bulk and transactional share (and contend for) the same workers.
+
+**Bounded retry, then dead-letter.** Processing failures are classified:
+
+- *Permanent* (`PermanentError`) — invalid recipient, missing template, render error. Retrying can't help, so the message is logged and dropped (acked).
+- *Transient* — a send failure. The message is re-published to its lane with an incremented retry count, up to `WORKER_MAX_RETRIES`. Once exhausted it's parked in a **dead-letter queue** (`notifications.dead`) for inspection/replay rather than lost or looping forever.
+
+If the re-publish or dead-letter itself fails, the delivery is nacked for broker redelivery — so a message is never dropped on a broker hiccup. (Retries are immediate; spacing them with backoff is a noted enhancement.)
+
+The pipeline is broker-agnostic above the adapter: the consumer depends on a small `Delivery` (Body/Ack/Nack) and `Publisher` interface, with the RabbitMQ specifics confined to `infrastructure/rabbitmq`. Rate limiting (`golang.org/x/time/rate`) smooths bursts before they hit the provider, turning an absorbed spike into a steady outbound rate instead of a wall of 429s.
+
 ## Design decisions
 
 The design targets a **spiky load profile**: a mild baseline of transactional traffic (password resets, OTPs, order confirmations) punctuated by bursts 10–100x larger (bulk campaigns, fan-out events). That assumption drives the decisions below.
@@ -106,13 +121,14 @@ The common dev loop runs the broker in Docker and the app on the host:
 ```bash
 make infra        # start RabbitMQ (Docker); management UI at http://localhost:15672 (guest/guest)
 make run-api      # start the API on :8080 (publishes to the broker)
+WORKER_TYPE=email WORKER_PRIORITY=transactional make run-worker   # drain one lane
 make smoke        # POST a sample notification → 202
 make infra-down   # stop the stack
 ```
 
-A posted notification is accepted (202) and routed to its `<type>.<priority>` queue; you can watch the lanes fill in the RabbitMQ management UI. The full stack can also run entirely in Docker with `make docker-up`.
+A posted notification is accepted (202), routed to its `<type>.<priority>` queue, and drained by the matching worker. The full stack — broker, API, and all six per-lane workers — runs in Docker with `make docker-up`.
 
-> **End-to-end delivery is not wired yet.** `cmd/worker` is still a stub (Phase 8), so messages queue but nothing consumes them — `make run-worker` is a placeholder until the consumer loop lands. Until then "running locally" means API + broker; delivery is exercised by the integration tests.
+> **Delivery uses stub senders until Phase 9.** The workers consume, render, and run the full pipeline, but the provider senders (SMTP/Twilio/FCM) are no-op stubs for now — the worker's `notification delivered` log shows the lane draining. Real outbound sending arrives with the provider integrations.
 
 ## Testing
 
@@ -134,7 +150,7 @@ This is the same shape the Phase 11 end-to-end suite will scale up: API → real
 
 ## Project status
 
-Implementation in progress — Phases 1–7 of [PLAN.md](PLAN.md) are complete:
+Implementation in progress — Phases 1–8 of [PLAN.md](PLAN.md) are complete:
 
 | # | Phase | Highlights |
 |---|-------|-----------|
@@ -145,5 +161,6 @@ Implementation in progress — Phases 1–7 of [PLAN.md](PLAN.md) are complete:
 | 5 | Notification service | constructor validation, `ValidationError`, resolve + publish |
 | 6 | HTTP transport | spec-first OpenAPI + oapi-codegen, error mapping, request logging |
 | 7 | Message queue | RabbitMQ adapter: direct exchange, type×priority queues, confirming publisher |
+| 8 | Workers | per-lane consumer, renderer + processors, rate limiting, bounded-retry → dead-letter |
 
-Next up: **Phase 8 — workers** (consume each lane, render templates, rate-limit, deliver), then provider integrations (SMTP/Twilio/FCM), observability, and the end-to-end suite.
+Next up: **Phase 9 — provider integrations** (SMTP/Twilio/FCM behind the sender interfaces, replacing the stub senders), then observability and the end-to-end suite.

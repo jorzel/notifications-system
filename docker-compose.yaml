@@ -1,3 +1,18 @@
+# Shared base for the per-lane workers. One process serves one
+# <type>.<priority> lane, so transactional lanes never share capacity
+# with bulk. Scale a lane with `docker compose up --scale worker-...=N`.
+x-worker: &worker
+  build:
+    context: .
+    dockerfile: Dockerfile.worker
+  environment: &worker-env
+    RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+    LOG_LEVEL: "info"
+  depends_on:
+    rabbitmq:
+      condition: service_healthy
+  restart: unless-stopped
+
 services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
@@ -33,50 +48,47 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  worker-email:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    container_name: notifications-worker-email
+  worker-email-transactional:
+    <<: *worker
     environment:
+      <<: *worker-env
       WORKER_TYPE: "email"
-      WORKER_CONCURRENCY: "10"
-      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
-      LOG_LEVEL: "info"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    restart: unless-stopped
+      WORKER_PRIORITY: "transactional"
 
-  worker-sms:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    container_name: notifications-worker-sms
+  worker-email-bulk:
+    <<: *worker
     environment:
+      <<: *worker-env
+      WORKER_TYPE: "email"
+      WORKER_PRIORITY: "bulk"
+
+  worker-sms-transactional:
+    <<: *worker
+    environment:
+      <<: *worker-env
       WORKER_TYPE: "sms"
-      WORKER_CONCURRENCY: "10"
-      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
-      LOG_LEVEL: "info"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    restart: unless-stopped
+      WORKER_PRIORITY: "transactional"
 
-  worker-push:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    container_name: notifications-worker-push
+  worker-sms-bulk:
+    <<: *worker
     environment:
+      <<: *worker-env
+      WORKER_TYPE: "sms"
+      WORKER_PRIORITY: "bulk"
+
+  worker-push-transactional:
+    <<: *worker
+    environment:
+      <<: *worker-env
       WORKER_TYPE: "push"
-      WORKER_CONCURRENCY: "10"
-      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
-      LOG_LEVEL: "info"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    restart: unless-stopped
+      WORKER_PRIORITY: "transactional"
+
+  worker-push-bulk:
+    <<: *worker
+    environment:
+      <<: *worker-env
+      WORKER_TYPE: "push"
+      WORKER_PRIORITY: "bulk"
 
 volumes:
   rabbitmq_data:

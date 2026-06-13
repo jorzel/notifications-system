@@ -2,7 +2,7 @@ package notification
 
 import "context"
 
-//go:generate go run go.uber.org/mock/mockgen -source=publisher.go -destination=mocks/publisher.go -package=mocks
+//go:generate go run go.uber.org/mock/mockgen@v0.6.0 -source=publisher.go -destination=mocks/publisher.go -package=mocks
 
 // Publisher defines the interface for publishing notifications to a message queue.
 type Publisher interface {

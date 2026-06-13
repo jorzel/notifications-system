@@ -32,6 +32,17 @@ func TestRoutingKey(t *testing.T) {
 	}
 }
 
+func TestDeadLetterIsNotALane(t *testing.T) {
+	for _, notifType := range allTypes {
+		for _, priority := range allPriorities {
+			require.NotEqual(t, DeadLetterQueue, QueueName(notifType, priority),
+				"the dead-letter queue must not collide with a lane queue")
+			require.NotEqual(t, DeadLetterRoutingKey, RoutingKey(notifType, priority),
+				"the dead-letter routing key must not collide with a lane key")
+		}
+	}
+}
+
 func TestRoutingKeysAreDistinctPerLane(t *testing.T) {
 	seen := make(map[string]bool)
 	for _, notifType := range allTypes {

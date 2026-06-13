@@ -104,23 +104,27 @@ notifications-system/
 │   ├── app/
 │   │   ├── notification/           # Notification use cases
 │   │   │   ├── service.go          # NotificationService (create & publish)
-│   │   │   ├── service_test.go
-│   │   │   ├── email_processor.go  # Email processing logic
-│   │   │   ├── email_processor_test.go
-│   │   │   ├── sms_processor.go    # SMS processing logic
-│   │   │   ├── sms_processor_test.go
-│   │   │   ├── push_processor.go   # Push processing logic
-│   │   │   └── push_processor_test.go
+│   │   │   ├── renderer.go         # Renderer (resolve + render → RenderedContent)
+│   │   │   ├── errors.go           # PermanentError (non-retryable processing failure)
+│   │   │   ├── email_processor.go  # render → build EmailMessage → rate-limit → send
+│   │   │   ├── sms_processor.go    # render → build SMSMessage → rate-limit → send
+│   │   │   ├── push_processor.go   # render → build PushMessage → rate-limit → send
+│   │   │   └── *_test.go
 │   │   │
 │   │   └── template/               # Template use cases
 │   │       ├── service.go          # TemplateService (resolve, list)
 │   │       └── service_test.go
 │   │
+│   ├── config/                     # Typed config loaded from env (API, Worker)
+│   │   ├── config.go
+│   │   └── config_test.go
+│   │
 │   ├── infrastructure/
 │   │   ├── rabbitmq/               # RabbitMQ adapter for notification.Publisher
 │   │   │   ├── connection.go       # connection + channel
-│   │   │   ├── topology.go         # exchange, type×priority queues, RoutingKey/QueueName
-│   │   │   ├── publisher.go        # confirming Publisher (publish + broker confirm)
+│   │   │   ├── topology.go         # exchange, type×priority queues + dead-letter, RoutingKey/QueueName
+│   │   │   ├── publisher.go        # confirming Publisher (Publish + PublishDeadLetter)
+│   │   │   ├── consumer.go         # Consume + Delivery adapter (Body/Ack/Nack)
 │   │   │   ├── topology_test.go
 │   │   │   └── publisher_integration_test.go  # testcontainers (build tag: integration)
 │   │   │
@@ -133,21 +137,23 @@ notifications-system/
 │   │       ├── file_repository.go  # File-based template repository
 │   │       └── file_repository_test.go
 │   │
-│   └── transport/
-│       ├── http/
-│       │   ├── handler/
-│       │   │   ├── notification.go
-│       │   │   ├── notification_test.go
-│       │   │   ├── template.go
-│       │   │   ├── template_test.go
+│   └── transport/                  # inbound transports, named by interaction style
+│       ├── rest/                   # synchronous HTTP/REST API
+│       │   ├── api/                # OpenAPI spec + generated server (was internal/api)
+│       │   │   ├── openapi.yaml    # source of truth
+│       │   │   ├── generate.go     # go:generate oapi-codegen
+│       │   │   └── server.gen.go   # generated ServerInterface + types
+│       │   ├── handler/            # implements the generated StrictServerInterface
+│       │   │   ├── handler.go
+│       │   │   ├── errors.go       # domain → HTTP error mapping
 │       │   │   └── health.go
 │       │   ├── middleware/
-│       │   │   ├── logging.go
-│       │   │   └── recovery.go
-│       │   └── server.go       # request/response types come generated from the spec
+│       │   │   └── logging.go      # context logger + access log
+│       │   ├── server.go           # package rest (Echo assembly + timeouts)
+│       │   └── server_test.go
 │       │
-│       └── worker/
-│           ├── consumer.go
+│       └── queue/                  # asynchronous message consumption
+│           ├── consumer.go         # Consumer + retry/dead-letter policy
 │           └── consumer_test.go
 │
 ├── configs/
@@ -736,15 +742,17 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [x] Integration test (testcontainers): lane routing + priority isolation, run with `make test-integration`
 
 ### Phase 8: Workers
-- [ ] Write tests for email processor (resolve, render, validate, rate-limit, send)
-- [ ] Implement email processor
-- [ ] Write tests for SMS processor
-- [ ] Implement SMS processor
-- [ ] Write tests for push processor
-- [ ] Implement push processor
-- [ ] Write tests for consumer loop
-- [ ] Implement consumer loop
-- [ ] Per-provider rate limiting (golang.org/x/time/rate), limits from config
+- [x] `Renderer` (resolve + render → RenderedContent; template failures are permanent)
+- [x] Email/SMS/push processors (render → build provider message → rate-limit → send) with tests
+- [x] `PermanentError` to classify non-retryable failures (bad recipient/template/render)
+- [x] Per-provider rate limiting (golang.org/x/time/rate), limit from config
+- [x] Consumer loop with bounded-retry → dead-letter policy (tested with fakes, no broker)
+- [x] Dead-letter queue in the topology + `PublishDeadLetter`
+- [x] RabbitMQ consume adapter (`Consume` + `Delivery`)
+- [x] Wire `cmd/worker`: one lane per process (WORKER_TYPE × WORKER_PRIORITY), stub senders until Phase 9
+- [x] `internal/config` — typed config from env for API and worker
+- [x] docker-compose: one worker service per lane (6), via a shared anchor
+- [x] Worker integration test (testcontainers): delivery + dead-letter-after-retries
 
 ### Phase 9: Provider Integrations
 **Testability rule:** every adapter takes an injectable endpoint and `*http.Client` (SMTP host:port for email; base URL + client for Twilio/FCM). No hardcoded endpoints — this is what lets the e2e point adapters at a mock server (see Testing Strategy).

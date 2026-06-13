@@ -7,10 +7,10 @@ package handler
 import (
 	"context"
 
-	"github.com/jorzel/notifications-system/internal/api"
 	appnotification "github.com/jorzel/notifications-system/internal/app/notification"
 	apptemplate "github.com/jorzel/notifications-system/internal/app/template"
 	domainnotification "github.com/jorzel/notifications-system/internal/domain/notification"
+	"github.com/jorzel/notifications-system/internal/transport/rest/api"
 )
 
 // Handler serves the notification API endpoints.

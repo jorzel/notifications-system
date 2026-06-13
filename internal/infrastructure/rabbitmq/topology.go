@@ -16,6 +16,14 @@ import (
 // so bulk traffic can never delay transactional traffic.
 const Exchange = "notifications"
 
+// Dead-letter lane. Messages that exhaust their retries are parked here by
+// the consumer (an explicit publish, not broker dead-lettering) so they can
+// be inspected and replayed rather than lost.
+const (
+	DeadLetterQueue      = "notifications.dead"
+	DeadLetterRoutingKey = "dead"
+)
+
 // allTypes and allPriorities enumerate the lanes the topology declares.
 var (
 	allTypes      = []notification.Type{notification.TypeEmail, notification.TypeSMS, notification.TypePush}
@@ -52,6 +60,13 @@ func DeclareTopology(ch *amqp.Channel) error {
 				return fmt.Errorf("bind queue %q: %w", name, err)
 			}
 		}
+	}
+
+	if _, err := ch.QueueDeclare(DeadLetterQueue, true, false, false, false, nil); err != nil {
+		return fmt.Errorf("declare dead-letter queue %q: %w", DeadLetterQueue, err)
+	}
+	if err := ch.QueueBind(DeadLetterQueue, DeadLetterRoutingKey, Exchange, false, nil); err != nil {
+		return fmt.Errorf("bind dead-letter queue %q: %w", DeadLetterQueue, err)
 	}
 	return nil
 }

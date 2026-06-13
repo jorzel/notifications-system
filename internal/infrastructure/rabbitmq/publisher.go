@@ -64,14 +64,24 @@ func NewPublisher(conn *Connection, opts ...Option) (*Publisher, error) {
 // broker confirm. A nack, a missing confirm, or a timeout is reported as
 // an error.
 func (p *Publisher) Publish(ctx context.Context, msg *notification.Message) error {
+	return p.publish(ctx, RoutingKey(msg.Type, msg.Priority), msg)
+}
+
+// PublishDeadLetter parks a message in the dead-letter queue. The consumer
+// calls it for notifications that have exhausted their retries.
+func (p *Publisher) PublishDeadLetter(ctx context.Context, msg *notification.Message) error {
+	return p.publish(ctx, DeadLetterRoutingKey, msg)
+}
+
+func (p *Publisher) publish(ctx context.Context, routingKey string, msg *notification.Message) error {
 	body, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal notification %s: %w", msg.ID, err)
 	}
 
 	// Bound the whole operation, including the lock wait, so a hung broker
-	// can't stall the API publish path: once the budget passes, queued
-	// publishes fail fast instead of piling up behind the mutex.
+	// can't stall the publish path: once the budget passes, queued publishes
+	// fail fast instead of piling up behind the mutex.
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
@@ -81,7 +91,7 @@ func (p *Publisher) Publish(ctx context.Context, msg *notification.Message) erro
 	confirm, err := p.ch.PublishWithDeferredConfirmWithContext(
 		ctx,
 		Exchange,
-		RoutingKey(msg.Type, msg.Priority),
+		routingKey,
 		false, // mandatory: routing is guaranteed by validated type+priority + declared topology
 		false, // immediate
 		amqp.Publishing{
