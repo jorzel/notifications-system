@@ -13,7 +13,7 @@ import (
 
 	appnotification "github.com/jorzel/notifications-system/internal/app/notification"
 	apptemplate "github.com/jorzel/notifications-system/internal/app/template"
-	domainnotification "github.com/jorzel/notifications-system/internal/domain/notification"
+	"github.com/jorzel/notifications-system/internal/infrastructure/rabbitmq"
 	infratemplate "github.com/jorzel/notifications-system/internal/infrastructure/template"
 	httpserver "github.com/jorzel/notifications-system/internal/transport/http"
 )
@@ -28,14 +28,26 @@ func main() {
 
 	templatesDir := envOr("TEMPLATES_DIR", "configs/templates")
 	addr := envOr("HTTP_ADDR", ":8080")
+	rabbitURL := envOr("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 
 	templateRepo, err := infratemplate.NewFileRepository(templatesDir)
 	if err != nil {
 		logger.Fatal().Err(err).Str("templates_dir", templatesDir).Msg("failed to load templates")
 	}
 
+	conn, err := rabbitmq.Dial(rabbitURL)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to connect to rabbitmq")
+	}
+	defer func() { _ = conn.Close() }()
+
+	publisher, err := rabbitmq.NewPublisher(conn)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to set up publisher")
+	}
+
 	tmplSvc := apptemplate.NewService(templateRepo)
-	notifSvc := appnotification.NewService(&stubPublisher{}, tmplSvc)
+	notifSvc := appnotification.NewService(publisher, tmplSvc)
 
 	server, err := httpserver.NewServer(notifSvc, tmplSvc, logger)
 	if err != nil {
@@ -66,17 +78,4 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-// stubPublisher accepts and drops messages so the API is runnable before
-// the RabbitMQ publisher exists (Phase 7).
-type stubPublisher struct{}
-
-func (p *stubPublisher) Publish(ctx context.Context, msg *domainnotification.Message) error {
-	zerolog.Ctx(ctx).Warn().
-		Str("notification_id", msg.ID).
-		Str("type", string(msg.Type)).
-		Str("priority", string(msg.Priority)).
-		Msg("stub publisher: dropping notification")
-	return nil
 }

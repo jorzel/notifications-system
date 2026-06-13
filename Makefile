@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt clean run-api run-worker docker-build docker-up docker-down tidy generate
+.PHONY: build test test-integration lint fmt clean run-api run-worker docker-build docker-up docker-down tidy generate
 
 # Go parameters
 GOCMD=go
@@ -26,9 +26,13 @@ build-worker:
 # Build all binaries
 build: build-api build-worker
 
-# Run tests
+# Run unit tests
 test:
-	$(GOTEST) -v -race -cover ./...
+	$(GOTEST) -race -cover ./...
+
+# Run integration tests (build tag `integration`; requires Docker for testcontainers)
+test-integration:
+	$(GOTEST) -tags integration -race -count=1 ./...
 
 # Run tests with coverage report
 test-coverage:

@@ -1,6 +1,6 @@
 # notifications-system
 
-A notification system built in Go that delivers email, SMS, and push notifications through third-party providers (SendGrid, Twilio, FCM), with template-based messaging and asynchronous processing via a message queue.
+A notification system built in Go that delivers email, SMS, and push notifications through third-party providers (SMTP relay, Twilio, FCM), with template-based messaging and asynchronous processing via a message queue.
 
 See [PLAN.md](PLAN.md) for the full implementation plan.
 
@@ -18,6 +18,29 @@ Clients ──▶ API Server ──▶ RabbitMQ (channel × priority queues) ─
 - **Workers** — consume from queues, resolve and render templates, build validated provider messages, rate-limit outbound calls, and send via the provider.
 
 The code follows a clean architecture layout (`domain` / `app` / `infrastructure` / `transport`): all infrastructure (queue, providers, template storage) sits behind interfaces defined in the domain layer.
+
+## How publishing works
+
+The publish path lives in `internal/infrastructure/rabbitmq/` and implements the domain's `notification.Publisher` port. Four concepts and how they relate:
+
+```
+notification ─▶ RoutingKey("email","bulk") = "email.bulk"
+                          │
+   Publisher.Publish ─────┤ publishes to the exchange with that routing key,
+   (over a Channel)       │ then waits for the broker's confirm
+                          ▼
+        direct exchange "notifications"
+                          │  binding key == routing key (exact match)
+                          ▼
+                  queue "email.bulk"  ──▶ consumed by email workers
+```
+
+- **Connection** (`connection.go`) — a single TCP connection to the broker, holding one AMQP **channel**. Channels are the lightweight virtual connections over which all AMQP commands travel.
+- **Channel** — an AMQP channel is *not* safe for concurrent use, so the publisher serializes sends behind a mutex and puts the channel into **confirm mode** at startup. (One confirming channel handles thousands of publishes/sec; a channel pool is the scaling step if the API ever outgrows it.)
+- **Topology** (`topology.go`) — declared idempotently at startup: one durable **direct exchange** (`notifications`) and one durable queue per channel × priority, each bound to the exchange. `DeclareTopology` is safe to call from both the publisher and (later) the consumer.
+- **RoutingKey** (`topology.go`) — `"<type>.<priority>"`, derived from the notification. The publisher publishes to the exchange with this key; a direct exchange delivers to the queue whose binding key matches exactly. The queue name equals its routing key, so `email.bulk` notifications land in the `email.bulk` queue and nowhere else.
+
+**Reliability — publisher confirms.** `Publish` returns success only after the broker acknowledges the message, so a notification is never silently lost between API and broker. A nack, or no confirm within a bounded **publish timeout**, becomes an error → the API responds 500 and the client can retry. The timeout covers the whole operation *including the channel-lock wait*, so a hung broker can't stall the API publish path — queued publishes fail fast instead of piling up.
 
 ## Design decisions
 
@@ -47,7 +70,7 @@ A spike absorbed by the queue must not be replayed at full speed into SendGrid o
 
 ### 5. Infrastructure behind domain interfaces
 
-`Publisher`, `EmailSender`, `SMSSender`, `PushSender`, and `TemplateRepository` are interfaces defined in the domain layer; RabbitMQ, SendGrid, Twilio, FCM, and file storage are implementations in `infrastructure/`. This keeps business logic testable without external systems — and it is what makes the alternative architectures below a contained swap rather than a rewrite.
+`Publisher`, `EmailSender`, `SMSSender`, `PushSender`, and `TemplateRepository` are interfaces defined in the domain layer; RabbitMQ, SMTP, Twilio, FCM, and file storage are implementations in `infrastructure/` (named by technology — `infrastructure/rabbitmq`, `infrastructure/provider`, …). This keeps business logic testable without external systems — and it is what makes the alternative architectures below a contained swap rather than a rewrite.
 
 ## How the design would differ under other load profiles
 
@@ -76,6 +99,36 @@ The opposite direction: the bottlenecks move and some choices stop scaling.
 
 Two decisions survive all three profiles unchanged: rendering in the workers (better or neutral everywhere), and infrastructure behind domain interfaces (which is what keeps the profile choice revisable).
 
+## Testing
+
+Tests are split into two tiers so the everyday loop stays fast and Docker-free, while real-infrastructure tests run on demand.
+
+```
+make test              # unit tests — no Docker, milliseconds
+make test-integration  # integration tests — testcontainers, needs Docker
+```
+
+**Unit tests** (the default `go test ./...`) cover the domain (entities, value objects, constructor validation), the application services (publisher mocked at the port, real template service over an in-memory repo), and the full HTTP stack via `httptest` (routing + spec validation + handlers + error mapping). Only the architectural boundary — the `Publisher` port — is mocked; internal collaborators are real.
+
+**Integration tests** are guarded by the `//go:build integration` tag, so they never run in the unit loop. Each spins up the real dependency with [testcontainers](https://golang.testcontainers.org/) and exercises the actual adapter — no fakes. The RabbitMQ publisher test (`internal/infrastructure/rabbitmq/publisher_integration_test.go`) starts a real broker container and asserts the two properties that only a real broker can prove:
+
+- **Lane routing** — a published notification arrives on its `<type>.<priority>` queue, intact after a JSON round-trip.
+- **Priority isolation** — a `bulk` send never leaks into the `transactional` lane. This is the system's central design claim (campaigns can't delay OTPs), so it is verified against a live broker, not asserted in prose.
+
+This is the same shape the Phase 11 end-to-end suite will scale up: API → real RabbitMQ → real consumer → provider double, across every channel × priority, with Mailpit standing in for SMTP. See the Testing Strategy section of [PLAN.md](PLAN.md) for the full plan.
+
 ## Project status
 
-Implementation in progress — Phases 1–3 of [PLAN.md](PLAN.md) are complete (project setup, domain layer, provider value-object validation). Next up: template system, notification service, HTTP transport, queue, and workers.
+Implementation in progress — Phases 1–7 of [PLAN.md](PLAN.md) are complete:
+
+| # | Phase | Highlights |
+|---|-------|-----------|
+| 1 | Project setup | go modules, Makefile, Docker, CI tooling |
+| 2 | Domain layer | notification/template/provider entities, value objects, ports |
+| 3 | Validation | provider value objects (RFC 5322 email, E.164 phone, device token) |
+| 4 | Template system | file repository (YAML front matter), template service |
+| 5 | Notification service | constructor validation, `ValidationError`, resolve + publish |
+| 6 | HTTP transport | spec-first OpenAPI + oapi-codegen, error mapping, request logging |
+| 7 | Message queue | RabbitMQ adapter: direct exchange, type×priority queues, confirming publisher |
+
+Next up: **Phase 8 — workers** (consume each lane, render templates, rate-limit, deliver), then provider integrations (SMTP/Twilio/FCM), observability, and the end-to-end suite.

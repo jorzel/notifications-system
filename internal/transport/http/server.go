@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	echomiddleware "github.com/labstack/echo/v4/middleware"
@@ -18,6 +19,16 @@ import (
 	apptemplate "github.com/jorzel/notifications-system/internal/app/template"
 	"github.com/jorzel/notifications-system/internal/transport/http/handler"
 	"github.com/jorzel/notifications-system/internal/transport/http/middleware"
+)
+
+// HTTP server timeouts harden against slow clients and hung connections.
+// WriteTimeout must exceed the publisher's confirm timeout so a valid but
+// slow publish isn't cut off mid-response.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 15 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 60 * time.Second
 )
 
 // NewServer builds the HTTP server with all routes and middleware.
@@ -34,6 +45,11 @@ func NewServer(notifSvc *appnotification.Service, tmplSvc *apptemplate.Service, 
 	server.HideBanner = true
 	server.HidePort = true
 	server.HTTPErrorHandler = httpErrorHandler
+
+	server.Server.ReadHeaderTimeout = readHeaderTimeout
+	server.Server.ReadTimeout = readTimeout
+	server.Server.WriteTimeout = writeTimeout
+	server.Server.IdleTimeout = idleTimeout
 
 	server.Use(echomiddleware.RequestID())
 	server.Use(middleware.ContextLogger(logger))

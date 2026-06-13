@@ -117,9 +117,12 @@ notifications-system/
 │   │       └── service_test.go
 │   │
 │   ├── infrastructure/
-│   │   ├── queue/
-│   │   │   ├── rabbitmq.go         # RabbitMQ connection
-│   │   │   └── publisher.go        # Publisher implementation
+│   │   ├── rabbitmq/               # RabbitMQ adapter for notification.Publisher
+│   │   │   ├── connection.go       # connection + channel
+│   │   │   ├── topology.go         # exchange, type×priority queues, RoutingKey/QueueName
+│   │   │   ├── publisher.go        # confirming Publisher (publish + broker confirm)
+│   │   │   ├── topology_test.go
+│   │   │   └── publisher_integration_test.go  # testcontainers (build tag: integration)
 │   │   │
 │   │   ├── provider/
 │   │   │   ├── smtp.go             # SMTP email provider (configurable host:port)
@@ -725,10 +728,12 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [x] Runnable `cmd/api` (graceful shutdown; stub publisher until Phase 7)
 
 ### Phase 7: Message Queue
-- [ ] Implement RabbitMQ connection
-- [ ] Declare channel × priority topology (`<type>.<transactional|bulk>` queues)
-- [ ] Implement publisher (routing key from notification type + priority)
-- [ ] Wire publisher to notification service
+- [x] Implement RabbitMQ connection (`infrastructure/rabbitmq`, named by technology)
+- [x] Declare channel × priority topology: direct exchange, durable `<type>.<priority>` queues bound 1:1
+- [x] Implement publisher with publisher confirms + bounded publish timeout (routing key from type + priority)
+- [x] Wire publisher into `cmd/api` (replaces the stub; fail-fast on broker connect)
+- [x] HTTP server timeouts (read/write/idle) — hardening surfaced during the timeout review
+- [x] Integration test (testcontainers): lane routing + priority isolation, run with `make test-integration`
 
 ### Phase 8: Workers
 - [ ] Write tests for email processor (resolve, render, validate, rate-limit, send)

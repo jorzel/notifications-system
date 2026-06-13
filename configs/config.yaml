@@ -1,15 +1,18 @@
 server:
   port: 8080
-  read_timeout: 30s
+  read_header_timeout: 5s
+  read_timeout: 15s
   write_timeout: 30s
+  idle_timeout: 60s
 
 rabbitmq:
   url: amqp://guest:guest@localhost:5672/
   exchange: notifications
-  queues:
-    email: email_queue
-    sms: sms_queue
-    push: push_queue
+  # Queues are not configured statically: the topology declares one durable
+  # queue per channel x priority, named "<type>.<priority>" (e.g.
+  # email.transactional, email.bulk, sms.transactional, ...). See
+  # internal/infrastructure/rabbitmq/topology.go.
+  publish_timeout: 5s
 
 worker:
   type: email
