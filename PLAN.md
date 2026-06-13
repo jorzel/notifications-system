@@ -51,8 +51,8 @@ A scalable, microservice-ready notification system built in Go that supports mul
                     │                 │                 │
                     ▼                 ▼                 ▼
          ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-         │   SendGrid   │  │    Twilio    │  │     FCM      │
-         │   (SMTP)     │  │              │  │    (APNs)    │
+         │  SMTP relay  │  │    Twilio    │  │     FCM      │
+         │ (SendGrid/…) │  │    (REST)    │  │    (APNs)    │
          └──────────────┘  └──────────────┘  └──────────────┘
 ```
 
@@ -122,9 +122,9 @@ notifications-system/
 │   │   │   └── publisher.go        # Publisher implementation
 │   │   │
 │   │   ├── provider/
-│   │   │   ├── sendgrid.go         # SendGrid email provider
-│   │   │   ├── twilio.go           # Twilio SMS provider
-│   │   │   └── fcm.go              # FCM push provider
+│   │   │   ├── smtp.go             # SMTP email provider (configurable host:port)
+│   │   │   ├── twilio.go           # Twilio SMS provider (configurable base URL)
+│   │   │   └── fcm.go              # FCM push provider (configurable base URL)
 │   │   │
 │   │   └── template/
 │   │       ├── file_repository.go  # File-based template repository
@@ -629,7 +629,58 @@ var (
 
 ---
 
-## 8. Implementation Phases (TDD Approach)
+## 8. Testing Strategy
+
+The real providers (Twilio, FCM, any SMTP host) can't run in CI — cost,
+credentials, and they send to real recipients. So testing splits into two
+pipelines, and the `EmailSender` / `SMSSender` / `PushSender` interfaces are the
+substitution seam: everything up to "worker renders the template and builds a
+validated provider message" runs against real infrastructure; only the outbound
+provider call is doubled.
+
+### Test pyramid
+
+| Level | Scope | Doubles | Status |
+|-------|-------|---------|--------|
+| Domain | entities, value objects, constructor validation | none | ✅ done |
+| App | services (notification, template) | `Publisher` mock at the port; real template svc over in-memory repo | ✅ done |
+| Transport | full HTTP stack via httptest (routing + spec validation + handlers + error mapping) | `Publisher` mock | ✅ done |
+| Infra (per adapter) | each provider adapter's request build + response parse | mock SMTP/HTTP server | Phase 9 |
+| **E2E** | API → broker → consumer → processor → provider | real RabbitMQ (testcontainers); provider double | Phase 11 |
+
+### CI end-to-end pipeline (Phase 11)
+
+```
+POST /api/v1/notifications → real RabbitMQ (container) → real consumer → processor → provider double
+                                  (channel × priority routing)                         (records / catches)
+```
+
+Table-driven over **{email, sms, push} × {transactional, bulk}** — one matrix
+covers every channel. This is genuine e2e: real publish, real routing keys, real
+serialization, real ack. What it proves that lower levels can't:
+- **Priority routing** — `bulk` lands in the bulk queue, `transactional` in the
+  transactional queue, each drained by the right worker. This is the system's
+  central design claim, so the e2e asserts it explicitly.
+- `Message` serialization round-trips over the wire; ack/retry behaves.
+
+Provider doubles, by channel:
+- **Email** — Mailpit testcontainer (real SMTP server + HTTP API). The test
+  asserts on the actually-delivered message. Doubles as the local "watch it
+  work" inbox.
+- **SMS / push** — stub HTTP server with the adapter's base URL injected
+  (Phase 9 testability rule). The test asserts the outbound provider request.
+
+Queue e2e is asynchronous: assertions poll via an `eventuallyDelivered` helper
+(`require.Eventually` + timeout), never immediately.
+
+### Manual / staging smoke
+
+Real providers, run by hand before a release — never in CI. Validates real
+credentials and deliverability; out of scope for automated runs.
+
+---
+
+## 9. Implementation Phases (TDD Approach)
 
 Each step follows: **Write Tests → Implement → Refactor**
 
@@ -691,23 +742,28 @@ Each step follows: **Write Tests → Implement → Refactor**
 - [ ] Per-provider rate limiting (golang.org/x/time/rate), limits from config
 
 ### Phase 9: Provider Integrations
-- [ ] Implement SendGrid email provider
-- [ ] Implement Twilio SMS provider
-- [ ] Implement FCM push provider
+**Testability rule:** every adapter takes an injectable endpoint and `*http.Client` (SMTP host:port for email; base URL + client for Twilio/FCM). No hardcoded endpoints — this is what lets the e2e point adapters at a mock server (see Testing Strategy).
+- [ ] Implement SMTP email provider (configurable host; sends MIME via SMTP relay — SendGrid or any SMTP host)
+- [ ] Implement Twilio SMS provider (injectable base URL + http.Client)
+- [ ] Implement FCM push provider (injectable base URL + http.Client)
+- [ ] Per-adapter integration tests (testcontainers / mock server) verifying request construction and response/error parsing
 
 ### Phase 10: Observability
 - [ ] Add structured logging throughout
 - [ ] Add Prometheus metrics
 - [ ] Add health checks for dependencies
 
-### Phase 11: Integration Tests & Documentation
-- [ ] Write API integration tests (testcontainers)
-- [ ] Write worker integration tests (testcontainers)
+### Phase 11: End-to-End Tests & Documentation
+- [ ] `eventuallyDelivered` test helper (`require.Eventually` + timeout) for async queue assertions
+- [ ] E2E matrix over {email, sms, push} × {transactional, bulk}: POST to API → real RabbitMQ (testcontainers) → real consumer → processor → provider double; assert the rendered, validated message arrives on the right channel
+- [ ] Assert priority routing: a `bulk` send lands in the bulk queue, `transactional` in the transactional queue (the system's core design claim)
+- [ ] Email e2e through Mailpit (testcontainer SMTP): assert on the actually-delivered message
+- [ ] SMS/push e2e via stub HTTP server (injected base URL): assert the outbound provider request
 - [ ] Serve the OpenAPI spec (Swagger UI or `/openapi.yaml` endpoint) — the spec itself already exists from Phase 6
 
 ---
 
-## 9. Dependencies
+## 10. Dependencies
 
 ```go
 github.com/labstack/echo/v4
@@ -721,15 +777,20 @@ github.com/rs/zerolog
 github.com/prometheus/client_golang
 github.com/stretchr/testify
 github.com/testcontainers/testcontainers-go
-github.com/sendgrid/sendgrid-go
+github.com/wneessen/go-mail          // SMTP client (MIME email over a configurable host)
 github.com/twilio/twilio-go
 firebase.google.com/go/v4
 golang.org/x/time
+go.uber.org/mock                     // generated mocks (e.g. Publisher)
 ```
+
+> Email goes over SMTP relay (provider-agnostic), so there is no `sendgrid-go`
+> dependency. CI e2e uses Mailpit (`axllent/mailpit`) as a testcontainer — a
+> real SMTP server with an HTTP API to inspect delivered mail.
 
 ---
 
-## 10. Open Questions
+## 11. Open Questions
 
 1. **Database**: Should we persist notification history? (PostgreSQL for audit trail)
 2. **API Rate Limiting**: Should the API have rate limiting per client? (Provider-side rate limiting in workers is already part of the design.)
